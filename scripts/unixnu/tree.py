@@ -5,24 +5,64 @@ plus refer/, build/ and .cache/ for the scripts that expect them. Modules are sy
 their sources, so edits to a local module take effect on the next build; scripts are copied, since
 they locate the tree from their own real path. The device package appears as kits/<kit>.
 """
+import os
 import shutil
+import stat
+import subprocess
 from pathlib import Path
 
 from .util import Error, log
 
 
+def _is_link(path):
+    """True for a symbolic link or a Windows junction."""
+    if path.is_symlink():
+        return True
+    if os.name == 'nt':
+        try:
+            attributes = os.lstat(path).st_file_attributes
+        except OSError:
+            return False
+        return bool(attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT)
+    return False
+
+
+def _unlink(path):
+    if path.is_symlink() or not path.is_dir():
+        path.unlink()
+        return
+    try:
+        os.rmdir(path)          # junctions are removed with rmdir
+    except OSError:
+        shutil.rmtree(path)
+
+
 def _clear_links(directory):
     if directory.is_dir():
         for entry in directory.iterdir():
-            if entry.is_symlink():
-                entry.unlink()
+            if _is_link(entry):
+                _unlink(entry)
 
 
 def _link(target, link):
     link.parent.mkdir(parents=True, exist_ok=True)
-    if link.is_symlink() or link.exists():
-        link.unlink()
-    link.symlink_to(Path(target).resolve())
+    if _is_link(link) or link.exists():
+        _unlink(link)
+    target = Path(target).resolve()
+    try:
+        link.symlink_to(target)
+        return
+    except OSError:
+        if os.name != 'nt':
+            raise
+    # Windows without Developer Mode: a directory junction needs no privilege.
+    if target.is_dir():
+        result = subprocess.run(['cmd', '/c', 'mklink', '/J', str(link), str(target)],
+                                capture_output=True, text=True)
+        if result.returncode != 0:
+            raise Error(f'cannot link {link} -> {target}: {result.stderr.strip()}')
+    else:
+        shutil.copy2(target, link)
 
 
 def _copy_scripts(source, destination):
@@ -50,10 +90,10 @@ def assemble(ctx, modules):
     firmware = ctx.device / '.cache/firmware'
     firmware.mkdir(parents=True, exist_ok=True)
     link = tree / '.cache/firmware'
-    if link.is_symlink():
-        link.unlink()
+    if _is_link(link):
+        _unlink(link)
     if not link.exists():
-        link.symlink_to(firmware)
+        _link(firmware, link)
     kit = ctx.board.get('board', {}).get('kit', ctx.name)
     for (kind, name), module in sorted(modules.items()):
         if module.path is None:
@@ -67,7 +107,7 @@ def assemble(ctx, modules):
                 _link(module.path, tree / 'kits' / kit)
         else:
             _link(module.path, tree / {'driver': 'drivers', 'kit': 'kits', 'patch': 'patches', 'refer': 'refer'}[kind] / name)
-    if not (tree / 'package').is_symlink():
+    if not _is_link(tree / 'package'):
         raise Error('no package module: this repository or --local-package must provide package/')
     (tree / 'scripts').mkdir(exist_ok=True)
     for base in (ctx.root, ctx.device):
