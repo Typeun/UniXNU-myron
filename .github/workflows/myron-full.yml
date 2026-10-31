@@ -115,7 +115,8 @@ jobs:
         run: |
           ./unixnu defconfig "${{ inputs.defconfig }}" -D device
           ./unixnu tree -D device
-          ./unixnu build payload -D device --trust-cache device/inputs/trustcache.bundle
+          ./unixnu build payload -D device --trust-cache device/inputs/trustcache.bundle \
+            --unique-chip-id 0x1122334455667788
           ./unixnu bootimg -D device --uefi Mu-Silicium \
             --fd Mu-Silicium/Build/myronPkg/RELEASE_CLANGPDB/FV/SILICIUM_UEFI.fd \
             --dtb device/inputs/canoe.dtb
