@@ -1,0 +1,130 @@
+name: myron full image
+
+on:
+  workflow_dispatch:
+    inputs:
+      device_repository:
+        description: Device repository (owner/name)
+        default: Typeun/myron-device
+      defconfig:
+        default: myron_defconfig
+
+permissions:
+  contents: read
+
+jobs:
+  kernel:
+    runs-on: macos-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.device_repository }}
+          path: device
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Host tools
+        run: |
+          brew install cmake ninja unifdef llvm mtools dtc
+          echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
+
+      - name: Build kernel
+        run: |
+          ./unixnu defconfig "${{ inputs.defconfig }}" -D device
+          ./unixnu fetch xnu libplatform libdispatch AvailabilityVersions libpthread \
+                          corecrypto-2023 IOStorageFamily -D device
+          ./unixnu build kernel -D device
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: myron-kernel
+          path: out/*/kernel/**
+          if-no-files-found: error
+
+  image:
+    needs: kernel
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.device_repository }}
+          path: device
+
+      - uses: actions/checkout@v4
+        with:
+          repository: Typeun/myron-uefi
+          path: myron-uefi
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Host tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential uuid-dev nasm acpica-tools clang lld llvm \
+            mtools dtc python3-venv libfuse3-dev
+          LLVM_BIN=$(ls -d /usr/lib/llvm-*/bin | tail -1)
+          echo "$LLVM_BIN" >> "$GITHUB_PATH"
+          for t in clang llvm-objcopy llvm-nm mformat mcopy fdtput; do
+            printf '%-14s %s\n' "$t" "$(command -v "$t" || echo MISSING)"
+          done
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: myron-kernel
+          path: out
+
+      - name: Kernel into the build tree
+        run: |
+          ls -l out/*/kernel
+          test -f out/myron/kernel/kernel.macho
+
+      - name: Clone Mu-Silicium and overlay myronPkg
+        run: |
+          git clone --recursive --depth 1 https://github.com/Project-Silicium/Mu-Silicium.git
+          cp -r myron-uefi/Platforms/Xiaomi/myronPkg Mu-Silicium/Platforms/Xiaomi/myronPkg
+          cp myron-uefi/Resources/Configs/myron.toml Mu-Silicium/Resources/Configs/myron.toml
+          mkdir -p Mu-Silicium/Resources/DTBs
+          cp myron-uefi/Resources/DTBs/myron.dtb Mu-Silicium/Resources/DTBs/myron.dtb
+          D=Mu-Silicium/Mu_Basecore/BaseTools/Bin/mu_nasm_extdep
+          mkdir -p $D/Linux-x86-64
+          echo 'version: 20016.1.1' > $D/extdep_state.yaml
+          ln -sf /usr/bin/nasm /usr/bin/ndisasm $D/Linux-x86-64/ 2>/dev/null || true
+
+      - name: Build firmware
+        run: |
+          python3 -m venv venv
+          venv/bin/pip install -q -r Mu-Silicium/pip-requirements.txt
+          cd Mu-Silicium
+          source ../venv/bin/activate
+          python3 build_uefi.py -d myron -r RELEASE
+          fd=Build/myronPkg/RELEASE_CLANGPDB/FV/SILICIUM_UEFI.fd
+          test -f "$fd"
+          stat -c %s "$fd"
+
+      - name: Build payload and boot image
+        run: |
+          ./unixnu defconfig "${{ inputs.defconfig }}" -D device
+          ./unixnu tree -D device
+          ./unixnu build payload -D device --trust-cache device/inputs/trustcache.bundle
+          ./unixnu bootimg -D device --uefi Mu-Silicium \
+            --fd Mu-Silicium/Build/myronPkg/RELEASE_CLANGPDB/FV/SILICIUM_UEFI.fd \
+            --dtb device/inputs/canoe.dtb
+          ls -l out/myron/boot/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: myron-boot
+          path: |
+            out/myron/boot/**
+            out/myron/payload/payload.json
+          if-no-files-found: error
