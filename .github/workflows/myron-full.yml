@@ -34,6 +34,8 @@ jobs:
           echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
 
       - name: Build kernel
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           ./unixnu defconfig "${{ inputs.defconfig }}" -D device
           ./unixnu fetch xnu libplatform libdispatch AvailabilityVersions libpthread \
