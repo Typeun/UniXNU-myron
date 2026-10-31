@@ -98,7 +98,7 @@ jobs:
           mkdir -p Mu-Silicium/Resources/DTBs
           cp myron-uefi/Resources/DTBs/myron.dtb Mu-Silicium/Resources/DTBs/myron.dtb
           # the ARM64 header must describe shim + firmware volume
-          sed -i 's/^  \.quad FD_SIZE$/  .quad FD_SIZE + _Payload - _Head/' Mu-Silicium/BootShim/BootShim.S
+          sed -i 's/\.quad FD_SIZE /\.quad FD_SIZE + _Payload - _Head /' Mu-Silicium/BootShim/BootShim.S
           grep -n 'FD_SIZE + _Payload' Mu-Silicium/BootShim/BootShim.S
           D=Mu-Silicium/Mu_Basecore/BaseTools/Bin/mu_nasm_extdep
           mkdir -p $D/Linux-x86-64
